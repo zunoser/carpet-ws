@@ -64,4 +64,21 @@ Discord Developer Portal 側の redirect URL は `publicBaseUrl + discordRedirec
 {"jsonrpc":"2.0","id":3,"method":"bot.move","params":{"name":"bot_a","forward":1.0,"strafing":0.0,"sprinting":true}}
 ```
 
-Supported methods: `bot.create`, `bot.remove`, `bot.list`, `bot.action`, `bot.move`, `bot.look`, `bot.turn`, `bot.drop`, `bot.slot`, `bot.mount`, `bot.dismount`, `bot.stop`, `bot.command`.
+Supported methods:
+
+- Bot control: `bot.create`, `bot.remove`, `bot.list`, `bot.action`, `bot.move`, `bot.look`, `bot.turn`, `bot.drop`, `bot.slot`, `bot.mount`, `bot.dismount`, `bot.stop`, `bot.command`
+- Player/world state: `player.status`, `player.inventory`, `player.effects`, `world.blocksAround`, `world.entitiesAround`
+- Inventory operations: `player.inventory.set`, `player.inventory.swap`, `player.inventory.clear`
+- WebSocket watches: `watch.start`, `watch.stop`, `watch.list`
+
+Watch example:
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"watch.start","params":{"watchId":"bot-status","method":"player.status","targetParams":{"name":"bot_a"},"intervalMillis":1000}}
+```
+
+The server sends WebSocket notifications like:
+
+```json
+{"jsonrpc":"2.0","method":"watch.event","params":{"watchId":"bot-status","method":"player.status","result":{}}}
+```

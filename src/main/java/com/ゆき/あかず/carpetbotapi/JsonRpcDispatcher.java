@@ -31,41 +31,63 @@ public final class JsonRpcDispatcher {
 
         CompletableFuture<JsonElement> result;
         try {
-            result = switch (method) {
-                case "bot.create" -> bots.create(params);
-                case "bot.remove" -> bots.remove(params);
-                case "bot.list" -> bots.list();
-                case "bot.action" -> bots.action(params);
-                case "bot.move" -> bots.move(params);
-                case "bot.look" -> bots.look(params);
-                case "bot.turn" -> bots.turn(params);
-                case "bot.drop" -> bots.drop(params);
-                case "bot.slot" -> bots.slot(params);
-                case "bot.mount" -> bots.mount(params);
-                case "bot.dismount" -> bots.dismount(params);
-                case "bot.stop" -> bots.stop(params);
-                case "bot.command" -> bots.command(params);
-                default -> CompletableFuture.failedFuture(new RpcException(-32601, "Method not found"));
-            };
+            result = dispatch(method, params);
         } catch (Exception e) {
             result = CompletableFuture.failedFuture(e);
         }
 
-        return result.handle((json, throwable) -> {
-            if (throwable != null) {
-                Throwable cause = throwable.getCause() == null ? throwable : throwable.getCause();
-                if (cause instanceof RpcException rpcException) {
-                    return error(id, rpcException.code(), rpcException.getMessage());
-                }
-                CarpetBotApiMod.LOGGER.warn("JSON-RPC request failed", cause);
-                return error(id, -32000, cause.getMessage() == null ? "Server error" : cause.getMessage());
+        return result.handle((json, throwable) -> response(id, json, throwable));
+    }
+
+    public CompletableFuture<JsonElement> dispatch(String method, JsonObject params) {
+        return switch (method) {
+            case "bot.create" -> bots.create(params);
+            case "bot.remove" -> bots.remove(params);
+            case "bot.list" -> bots.list();
+            case "bot.action" -> bots.action(params);
+            case "bot.move" -> bots.move(params);
+            case "bot.look" -> bots.look(params);
+            case "bot.turn" -> bots.turn(params);
+            case "bot.drop" -> bots.drop(params);
+            case "bot.slot" -> bots.slot(params);
+            case "bot.mount" -> bots.mount(params);
+            case "bot.dismount" -> bots.dismount(params);
+            case "bot.stop" -> bots.stop(params);
+            case "bot.command" -> bots.command(params);
+            case "player.status" -> bots.status(params);
+            case "player.inventory" -> bots.inventory(params);
+            case "player.inventory.set" -> bots.inventorySet(params);
+            case "player.inventory.swap" -> bots.inventorySwap(params);
+            case "player.inventory.clear" -> bots.inventoryClear(params);
+            case "player.effects" -> bots.effects(params);
+            case "world.blocksAround" -> bots.blocksAround(params);
+            case "world.entitiesAround" -> bots.entitiesAround(params);
+            default -> CompletableFuture.failedFuture(new RpcException(-32601, "Method not found"));
+        };
+    }
+
+    public static String formatResponse(JsonElement id, JsonElement json, Throwable throwable) {
+        return response(id, json, throwable);
+    }
+
+    private static String response(JsonElement id, JsonElement json, Throwable throwable) {
+        if (throwable != null) {
+            Throwable cause = throwable.getCause() == null ? throwable : throwable.getCause();
+            if (cause instanceof RpcException rpcException) {
+                return error(id, rpcException.code(), rpcException.getMessage());
             }
-            JsonObject response = new JsonObject();
-            response.addProperty("jsonrpc", "2.0");
-            response.add("id", id);
-            response.add("result", json == null ? JsonNull.INSTANCE : json);
-            return GSON.toJson(response);
-        });
+            CarpetBotApiMod.LOGGER.warn("JSON-RPC request failed", cause);
+            return error(id, -32000, cause.getMessage() == null ? "Server error" : cause.getMessage());
+        }
+        JsonObject response = new JsonObject();
+        response.addProperty("jsonrpc", "2.0");
+        response.add("id", id);
+        response.add("result", json == null ? JsonNull.INSTANCE : json);
+        return GSON.toJson(response);
+    }
+
+    public static String formatError(JsonElement id, int code, String message) {
+        return error(id, code, message);
     }
 
     private static String error(JsonElement id, int code, String message) {
