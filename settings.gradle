@@ -1,0 +1,31 @@
+pluginManagement {
+    repositories {
+        maven {
+            name = "Fabric"
+            url = "https://maven.fabricmc.net/"
+        }
+        gradlePluginPortal()
+        mavenCentral()
+        maven {
+            name = "Mojang"
+            url = "https://libraries.minecraft.net/"
+        }
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+    repositories {
+        maven {
+            name = "Fabric"
+            url = "https://maven.fabricmc.net/"
+        }
+        maven {
+            name = "Mojang"
+            url = "https://libraries.minecraft.net/"
+        }
+        mavenCentral()
+    }
+}
+
+rootProject.name = "carpet-bot-api"

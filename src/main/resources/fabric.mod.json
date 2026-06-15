@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "carpet-bot-api",
+  "version": "${version}",
+  "name": "Carpet Bot API",
+  "description": "HTTP/WebSocket JSON-RPC API for controlling Fabric Carpet fake players.",
+  "authors": ["nakasyou", "Codex"],
+  "contact": {},
+  "license": "MIT",
+  "environment": "server",
+  "entrypoints": {
+    "main": [
+      "com.ゆき.あかず.carpetbotapi.CarpetBotApiMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "~1.21.8",
+    "fabric-api": "*",
+    "carpet": "*"
+  }
+}
