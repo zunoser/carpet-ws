@@ -8,7 +8,7 @@ Fabric Carpet fake players を HTTP/WebSocket JSON-RPC で操作するサーバ�
 ./gradlew build
 ```
 
-ローカルに Java 21 が無い場合は、Nix 環境なら次でもビルドできます。
+Minecraft 26.1.2 / Java 25 向けです。ローカルに Java 25 が無い場合は、Nix 環境なら次でもビルドできます。
 
 ```bash
 nix develop

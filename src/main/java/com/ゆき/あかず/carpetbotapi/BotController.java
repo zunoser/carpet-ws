@@ -6,23 +6,23 @@ import carpet.patches.EntityPlayerMPFake;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import net.minecraft.block.BlockState;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.effect.StatusEffectInstance;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.registry.RegistryKey;
-import net.minecraft.registry.RegistryKeys;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.world.ServerWorld;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.util.Identifier;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Box;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.GameMode;
-import net.minecraft.world.World;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.resources.Identifier;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.Level;
 
 import java.util.Collection;
 import java.util.Locale;
@@ -39,11 +39,11 @@ public final class BotController {
     public CompletableFuture<JsonElement> create(JsonObject params) {
         return onServer(() -> {
             String name = requiredString(params, "name");
-            Vec3d pos = new Vec3d(number(params, "x", 0), number(params, "y", 80), number(params, "z", 0));
+            Vec3 pos = new Vec3(number(params, "x", 0), number(params, "y", 80), number(params, "z", 0));
             double yaw = number(params, "yaw", 0);
             double pitch = number(params, "pitch", 0);
-            RegistryKey<World> dimension = dimension(string(params, "dimension", "minecraft:overworld"));
-            GameMode gameMode = gameMode(string(params, "gamemode", "survival"));
+            ResourceKey<Level> dimension = dimension(string(params, "dimension", "minecraft:overworld"));
+            GameType gameMode = gameMode(string(params, "gamemode", "survival"));
             boolean flying = bool(params, "flying", false);
             boolean created = EntityPlayerMPFake.createFake(name, server, pos, yaw, pitch, dimension, gameMode, flying);
             JsonObject out = new JsonObject();
@@ -55,8 +55,8 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> remove(JsonObject params) {
         return onServer(() -> {
-            ServerPlayerEntity player = bot(requiredString(params, "name"));
-            player.kill((ServerWorld) player.getWorld());
+            ServerPlayer player = bot(requiredString(params, "name"));
+            player.kill((ServerLevel) player.level());
             return ok();
         });
     }
@@ -64,17 +64,17 @@ public final class BotController {
     public CompletableFuture<JsonElement> list() {
         return onServer(() -> {
             JsonArray bots = new JsonArray();
-            for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
+            for (ServerPlayer player : server.getPlayerList().getPlayers()) {
                 if (player instanceof EntityPlayerMPFake) {
                     JsonObject bot = new JsonObject();
-                    bot.addProperty("name", player.getGameProfile().getName());
-                    bot.addProperty("uuid", player.getUuidAsString());
+                    bot.addProperty("name", player.getGameProfile().name());
+                    bot.addProperty("uuid", player.getStringUUID());
                     bot.addProperty("x", player.getX());
                     bot.addProperty("y", player.getY());
                     bot.addProperty("z", player.getZ());
-                    bot.addProperty("yaw", player.getYaw());
-                    bot.addProperty("pitch", player.getPitch());
-                    bot.addProperty("dimension", player.getWorld().getRegistryKey().getValue().toString());
+                    bot.addProperty("yaw", player.getYRot());
+                    bot.addProperty("pitch", player.getXRot());
+                    bot.addProperty("dimension", player.level().dimension().identifier().toString());
                     bots.add(bot);
                 }
             }
@@ -176,12 +176,12 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> command(JsonObject params) {
         return onServer(() -> {
-            ServerPlayerEntity player = bot(requiredString(params, "name"));
+            ServerPlayer player = bot(requiredString(params, "name"));
             String command = requiredString(params, "command");
             if (command.startsWith("/")) {
                 command = command.substring(1);
             }
-            server.getCommandManager().executeWithPrefix(player.getCommandSource(), command);
+            server.getCommands().performPrefixedCommand(player.createCommandSourceStack(), command);
             return ok();
         });
     }
@@ -196,44 +196,44 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> inventorySet(JsonObject params) {
         return onServer(() -> {
-            ServerPlayerEntity player = bot(requiredString(params, "name"));
-            int slot = inventorySlot(params, player.getInventory().size());
+            ServerPlayer player = bot(requiredString(params, "name"));
+            int slot = inventorySlot(params, player.getInventory().getContainerSize());
             if (bool(params, "empty", false)) {
-                player.getInventory().setStack(slot, ItemStack.EMPTY);
+                player.getInventory().setItem(slot, ItemStack.EMPTY);
             } else if (params.has("item")) {
                 throw new JsonRpcDispatcher.RpcException(-32602, "creating arbitrary item stacks is not implemented; use empty=true or swap existing slots");
             } else {
                 throw new JsonRpcDispatcher.RpcException(-32602, "missing parameter: empty");
             }
-            player.getInventory().markDirty();
+            player.getInventory().setChanged();
             return inventoryJson(player);
         });
     }
 
     public CompletableFuture<JsonElement> inventorySwap(JsonObject params) {
         return onServer(() -> {
-            ServerPlayerEntity player = bot(requiredString(params, "name"));
-            int size = player.getInventory().size();
+            ServerPlayer player = bot(requiredString(params, "name"));
+            int size = player.getInventory().getContainerSize();
             int a = slotNumber(params, "slotA", size);
             int b = slotNumber(params, "slotB", size);
-            ItemStack stackA = player.getInventory().getStack(a);
-            ItemStack stackB = player.getInventory().getStack(b);
-            player.getInventory().setStack(a, stackB);
-            player.getInventory().setStack(b, stackA);
-            player.getInventory().markDirty();
+            ItemStack stackA = player.getInventory().getItem(a);
+            ItemStack stackB = player.getInventory().getItem(b);
+            player.getInventory().setItem(a, stackB);
+            player.getInventory().setItem(b, stackA);
+            player.getInventory().setChanged();
             return inventoryJson(player);
         });
     }
 
     public CompletableFuture<JsonElement> inventoryClear(JsonObject params) {
         return onServer(() -> {
-            ServerPlayerEntity player = bot(requiredString(params, "name"));
+            ServerPlayer player = bot(requiredString(params, "name"));
             if (params.has("slot")) {
-                player.getInventory().setStack(inventorySlot(params, player.getInventory().size()), ItemStack.EMPTY);
+                player.getInventory().setItem(inventorySlot(params, player.getInventory().getContainerSize()), ItemStack.EMPTY);
             } else {
-                player.getInventory().clear();
+                player.getInventory().clearContent();
             }
-            player.getInventory().markDirty();
+            player.getInventory().setChanged();
             return inventoryJson(player);
         });
     }
@@ -241,17 +241,17 @@ public final class BotController {
     public CompletableFuture<JsonElement> effects(JsonObject params) {
         return onServer(() -> {
             JsonObject out = new JsonObject();
-            out.add("effects", effectsJson(player(requiredString(params, "name")).getStatusEffects()));
+            out.add("effects", effectsJson(player(requiredString(params, "name")).getActiveEffects()));
             return out;
         });
     }
 
     public CompletableFuture<JsonElement> blocksAround(JsonObject params) {
         return onServer(() -> {
-            ServerPlayerEntity player = player(requiredString(params, "name"));
+            ServerPlayer player = player(requiredString(params, "name"));
             int radius = Math.min(Math.max(integer(params, "radius", 3), 0), 8);
-            BlockPos center = player.getBlockPos();
-            ServerWorld world = (ServerWorld) player.getWorld();
+            BlockPos center = player.blockPosition();
+            ServerLevel world = (ServerLevel) player.level();
             JsonArray blocks = new JsonArray();
             for (int x = center.getX() - radius; x <= center.getX() + radius; x++) {
                 for (int y = center.getY() - radius; y <= center.getY() + radius; y++) {
@@ -262,9 +262,9 @@ public final class BotController {
                         block.addProperty("x", x);
                         block.addProperty("y", y);
                         block.addProperty("z", z);
-                        block.addProperty("id", Registries.BLOCK.getId(state.getBlock()).toString());
+                        block.addProperty("id", BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
                         block.addProperty("state", state.toString());
-                        block.addProperty("solid", state.isSolidBlock(world, pos));
+                        block.addProperty("solid", state.isSolidRender());
                         block.addProperty("air", state.isAir());
                         blocks.add(block);
                     }
@@ -280,12 +280,12 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> entitiesAround(JsonObject params) {
         return onServer(() -> {
-            ServerPlayerEntity player = player(requiredString(params, "name"));
+            ServerPlayer player = player(requiredString(params, "name"));
             double radius = Math.min(Math.max(number(params, "radius", 16), 0), 128);
-            Box box = Box.of(player.getPos(), radius * 2, radius * 2, radius * 2);
+            AABB box = AABB.ofSize(player.position(), radius * 2, radius * 2, radius * 2);
             JsonArray entities = new JsonArray();
-            for (Entity entity : player.getWorld().getOtherEntities(player, box)) {
-                if (entity.squaredDistanceTo(player) > radius * radius) {
+            for (Entity entity : player.level().getEntities(player, box, ignored -> true)) {
+                if (entity.distanceToSqr(player) > radius * radius) {
                     continue;
                 }
                 entities.add(entityJson(entity));
@@ -309,8 +309,8 @@ public final class BotController {
         return future;
     }
 
-    private ServerPlayerEntity player(String name) {
-        ServerPlayerEntity player = server.getPlayerManager().getPlayer(name);
+    private ServerPlayer player(String name) {
+        ServerPlayer player = server.getPlayerList().getPlayerByName(name);
         if (player == null) {
             throw new JsonRpcDispatcher.RpcException(-32602, "player not found: " + name);
         }
@@ -318,55 +318,54 @@ public final class BotController {
     }
 
     private EntityPlayerMPFake bot(String name) {
-        ServerPlayerEntity player = player(name);
+        ServerPlayer player = player(name);
         if (!(player instanceof EntityPlayerMPFake fake)) {
             throw new JsonRpcDispatcher.RpcException(-32602, "not a fake player: " + name);
         }
         return fake;
     }
 
-    private EntityPlayerActionPack actionPack(ServerPlayerEntity player) {
+    private EntityPlayerActionPack actionPack(ServerPlayer player) {
         return ((ServerPlayerInterface) player).getActionPack();
     }
 
-    private JsonObject playerStatus(ServerPlayerEntity player) {
+    private JsonObject playerStatus(ServerPlayer player) {
         JsonObject out = new JsonObject();
-        out.addProperty("name", player.getGameProfile().getName());
-        out.addProperty("uuid", player.getUuidAsString());
+        out.addProperty("name", player.getGameProfile().name());
+        out.addProperty("uuid", player.getStringUUID());
         out.addProperty("bot", player instanceof EntityPlayerMPFake);
-        out.add("position", vecJson(player.getPos()));
-        out.add("blockPosition", blockPosJson(player.getBlockPos()));
-        out.addProperty("yaw", player.getYaw());
-        out.addProperty("pitch", player.getPitch());
-        out.addProperty("dimension", player.getWorld().getRegistryKey().getValue().toString());
+        out.add("position", vecJson(player.position()));
+        out.add("blockPosition", blockPosJson(player.blockPosition()));
+        out.addProperty("yaw", player.getYRot());
+        out.addProperty("pitch", player.getXRot());
+        out.addProperty("dimension", player.level().dimension().identifier().toString());
         out.addProperty("health", player.getHealth());
         out.addProperty("maxHealth", player.getMaxHealth());
         out.addProperty("absorption", player.getAbsorptionAmount());
-        out.addProperty("air", player.getAir());
-        out.addProperty("maxAir", player.getMaxAir());
-        out.addProperty("fireTicks", player.getFireTicks());
-        out.addProperty("frozenTicks", player.getFrozenTicks());
-        out.addProperty("food", player.getHungerManager().getFoodLevel());
-        out.addProperty("saturation", player.getHungerManager().getSaturationLevel());
+        out.addProperty("air", player.getAirSupply());
+        out.addProperty("maxAir", player.getMaxAirSupply());
+        out.addProperty("fireTicks", player.getRemainingFireTicks());
+        out.addProperty("frozenTicks", player.getTicksFrozen());
+        out.addProperty("food", player.getFoodData().getFoodLevel());
+        out.addProperty("saturation", player.getFoodData().getSaturationLevel());
         out.addProperty("experienceLevel", player.experienceLevel);
-        out.addProperty("totalExperience", player.totalExperience);
         out.addProperty("experienceProgress", player.experienceProgress);
         out.addProperty("selectedSlot", player.getInventory().getSelectedSlot());
-        out.addProperty("sneaking", player.isSneaking());
+        out.addProperty("sneaking", player.isShiftKeyDown());
         out.addProperty("sprinting", player.isSprinting());
         out.addProperty("swimming", player.isSwimming());
-        out.addProperty("onGround", player.isOnGround());
-        out.add("effects", effectsJson(player.getStatusEffects()));
+        out.addProperty("onGround", player.onGround());
+        out.add("effects", effectsJson(player.getActiveEffects()));
         return out;
     }
 
-    private JsonObject inventoryJson(ServerPlayerEntity player) {
+    private JsonObject inventoryJson(ServerPlayer player) {
         JsonObject out = new JsonObject();
         out.addProperty("selectedSlot", player.getInventory().getSelectedSlot());
-        out.addProperty("size", player.getInventory().size());
+        out.addProperty("size", player.getInventory().getContainerSize());
         JsonArray slots = new JsonArray();
-        for (int i = 0; i < player.getInventory().size(); i++) {
-            JsonObject slot = itemStackJson(player.getInventory().getStack(i));
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            JsonObject slot = itemStackJson(player.getInventory().getItem(i));
             slot.addProperty("slot", i);
             slot.addProperty("section", inventorySection(i));
             slots.add(slot);
@@ -379,26 +378,26 @@ public final class BotController {
         JsonObject out = new JsonObject();
         out.addProperty("empty", stack.isEmpty());
         if (!stack.isEmpty()) {
-            out.addProperty("id", Registries.ITEM.getId(stack.getItem()).toString());
-            out.addProperty("name", stack.getName().getString());
-            out.addProperty("count", stack.getCount());
-            out.addProperty("maxCount", stack.getMaxCount());
-            out.addProperty("damage", stack.getDamage());
+            out.addProperty("id", BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
+            out.addProperty("name", stack.getHoverName().getString());
+            out.addProperty("count", stack.count());
+            out.addProperty("maxCount", stack.getMaxStackSize());
+            out.addProperty("damage", stack.getDamageValue());
             out.addProperty("maxDamage", stack.getMaxDamage());
         }
         return out;
     }
 
-    private static JsonArray effectsJson(Collection<StatusEffectInstance> effects) {
+    private static JsonArray effectsJson(Collection<MobEffectInstance> effects) {
         JsonArray out = new JsonArray();
-        for (StatusEffectInstance effect : effects) {
+        for (MobEffectInstance effect : effects) {
             JsonObject json = new JsonObject();
-            json.addProperty("id", effect.getEffectType().getIdAsString());
+            json.addProperty("id", effect.getEffect().unwrapKey().map(key -> key.identifier().toString()).orElse("unknown"));
             json.addProperty("amplifier", effect.getAmplifier());
             json.addProperty("duration", effect.getDuration());
             json.addProperty("ambient", effect.isAmbient());
-            json.addProperty("showParticles", effect.shouldShowParticles());
-            json.addProperty("showIcon", effect.shouldShowIcon());
+            json.addProperty("showParticles", effect.isVisible());
+            json.addProperty("showIcon", effect.showIcon());
             out.add(json);
         }
         return out;
@@ -406,12 +405,12 @@ public final class BotController {
 
     private static JsonObject entityJson(Entity entity) {
         JsonObject out = new JsonObject();
-        out.addProperty("uuid", entity.getUuidAsString());
-        out.addProperty("id", Registries.ENTITY_TYPE.getId(entity.getType()).toString());
+        out.addProperty("uuid", entity.getStringUUID());
+        out.addProperty("id", BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());
         out.addProperty("name", entity.getName().getString());
-        out.add("position", vecJson(entity.getPos()));
-        out.addProperty("yaw", entity.getYaw());
-        out.addProperty("pitch", entity.getPitch());
+        out.add("position", vecJson(entity.position()));
+        out.addProperty("yaw", entity.getYRot());
+        out.addProperty("pitch", entity.getXRot());
         out.addProperty("removed", entity.isRemoved());
         if (entity instanceof LivingEntity living) {
             out.addProperty("health", living.getHealth());
@@ -420,7 +419,7 @@ public final class BotController {
         return out;
     }
 
-    private static JsonObject vecJson(Vec3d pos) {
+    private static JsonObject vecJson(Vec3 pos) {
         JsonObject out = new JsonObject();
         out.addProperty("x", pos.x);
         out.addProperty("y", pos.y);
@@ -491,21 +490,21 @@ public final class BotController {
         };
     }
 
-    private static RegistryKey<World> dimension(String raw) {
+    private static ResourceKey<Level> dimension(String raw) {
         return switch (raw) {
-            case "overworld", "minecraft:overworld" -> World.OVERWORLD;
-            case "nether", "minecraft:the_nether" -> World.NETHER;
-            case "end", "minecraft:the_end" -> World.END;
-            default -> RegistryKey.of(RegistryKeys.WORLD, Identifier.of(raw));
+            case "overworld", "minecraft:overworld" -> Level.OVERWORLD;
+            case "nether", "minecraft:the_nether" -> Level.NETHER;
+            case "end", "minecraft:the_end" -> Level.END;
+            default -> ResourceKey.create(Registries.DIMENSION, Identifier.parse(raw));
         };
     }
 
-    private static GameMode gameMode(String raw) {
+    private static GameType gameMode(String raw) {
         return switch (raw.toLowerCase(Locale.ROOT)) {
-            case "creative" -> GameMode.CREATIVE;
-            case "adventure" -> GameMode.ADVENTURE;
-            case "spectator" -> GameMode.SPECTATOR;
-            case "survival" -> GameMode.SURVIVAL;
+            case "creative" -> GameType.CREATIVE;
+            case "adventure" -> GameType.ADVENTURE;
+            case "spectator" -> GameType.SPECTATOR;
+            case "survival" -> GameType.SURVIVAL;
             default -> throw new JsonRpcDispatcher.RpcException(-32602, "unknown gamemode: " + raw);
         };
     }

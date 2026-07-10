@@ -6,7 +6,7 @@
   outputs =
     { self, nixpkgs, ... }:
     let
-      javaVersion = 21;
+      javaVersion = 25;
 
       supportedSystems = [
         "x86_64-linux"
