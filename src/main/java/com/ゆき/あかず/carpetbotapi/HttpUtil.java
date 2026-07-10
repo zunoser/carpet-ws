@@ -58,11 +58,27 @@ public final class HttpUtil {
         return null;
     }
 
-    public static String readBody(HttpExchange exchange) throws IOException {
-        return new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+    public static String readBody(HttpExchange exchange, int maximumBytes) throws IOException {
+        String contentLength = exchange.getRequestHeaders().getFirst("Content-Length");
+        if (contentLength != null) {
+            try {
+                if (Long.parseLong(contentLength) > maximumBytes) throw new RequestTooLargeException();
+            } catch (NumberFormatException e) {
+                throw new IOException("invalid Content-Length", e);
+            }
+        }
+        byte[] bytes = exchange.getRequestBody().readNBytes(maximumBytes + 1);
+        if (bytes.length > maximumBytes) throw new RequestTooLargeException();
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
     private static String dec(String value) {
         return URLDecoder.decode(value, StandardCharsets.UTF_8);
+    }
+
+    public static final class RequestTooLargeException extends IOException {
+        public RequestTooLargeException() {
+            super("request body too large");
+        }
     }
 }

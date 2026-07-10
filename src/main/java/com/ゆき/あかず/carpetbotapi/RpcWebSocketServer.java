@@ -8,37 +8,55 @@ import com.google.gson.JsonParser;
 import org.java_websocket.WebSocket;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
+import org.java_websocket.drafts.Draft;
+import org.java_websocket.drafts.Draft_6455;
 
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class RpcWebSocketServer extends WebSocketServer {
     private static final Gson GSON = new Gson();
     private static final int MIN_WATCH_INTERVAL_MILLIS = 100;
     private static final int MAX_WATCH_INTERVAL_MILLIS = 60_000;
+    private static final int MAX_FRAME_BYTES = 64 * 1024;
+    private static final int MAX_CONNECTIONS = 64;
+    private static final int MAX_WATCHES_PER_CONNECTION = 16;
+    private static final Set<String> WATCHABLE_METHODS = Set.of(
+        "bot.list", "player.status", "player.inventory", "player.effects",
+        "world.blocksAround", "world.entitiesAround"
+    );
 
     private final ApiKeyStore apiKeys;
     private final JsonRpcDispatcher dispatcher;
     private final ScheduledExecutorService watchExecutor = Executors.newScheduledThreadPool(2);
-    private final Map<WebSocket, Map<String, ScheduledFuture<?>>> watches = new ConcurrentHashMap<>();
+    private final Map<WebSocket, Map<String, Watch>> watches = new ConcurrentHashMap<>();
 
     public RpcWebSocketServer(BotApiConfig config, ApiKeyStore apiKeys, JsonRpcDispatcher dispatcher) {
-        super(new InetSocketAddress(config.host, config.websocketPort));
+        super(new InetSocketAddress(config.host, config.websocketPort), Runtime.getRuntime().availableProcessors(),
+            List.<Draft>of(new Draft_6455(List.of(), MAX_FRAME_BYTES)));
+        setMaxPendingConnections(64);
         this.apiKeys = apiKeys;
         this.dispatcher = dispatcher;
     }
 
     @Override
     public void onOpen(WebSocket conn, ClientHandshake handshake) {
+        if (getConnections().size() > MAX_CONNECTIONS) {
+            conn.close(1013, "too many connections");
+            return;
+        }
         String token = token(handshake);
         if (apiKeys.authenticate(token).isEmpty()) {
             conn.close(1008, "invalid api key");
@@ -49,6 +67,10 @@ public final class RpcWebSocketServer extends WebSocketServer {
 
     @Override
     public void onMessage(WebSocket conn, String message) {
+        if (message.getBytes(StandardCharsets.UTF_8).length > MAX_FRAME_BYTES) {
+            conn.close(1009, "message too large");
+            return;
+        }
         if (handleWatchMessage(conn, message)) {
             return;
         }
@@ -117,8 +139,8 @@ public final class RpcWebSocketServer extends WebSocketServer {
             ? params.get("watchId").getAsString()
             : UUID.randomUUID().toString();
         String targetMethod = requiredString(params, "method");
-        if (targetMethod.startsWith("watch.")) {
-            throw new JsonRpcDispatcher.RpcException(-32602, "watching watch.* methods is not allowed");
+        if (!WATCHABLE_METHODS.contains(targetMethod)) {
+            throw new JsonRpcDispatcher.RpcException(-32602, "method is not watchable: " + targetMethod);
         }
         JsonObject targetParams = params.has("targetParams") && params.get("targetParams").isJsonObject()
             ? params.getAsJsonObject("targetParams")
@@ -127,19 +149,23 @@ public final class RpcWebSocketServer extends WebSocketServer {
                 : new JsonObject();
         int intervalMillis = Math.max(MIN_WATCH_INTERVAL_MILLIS, Math.min(MAX_WATCH_INTERVAL_MILLIS, intParam(params, "intervalMillis", 1000)));
 
-        Map<String, ScheduledFuture<?>> connWatches = watches.computeIfAbsent(conn, ignored -> new ConcurrentHashMap<>());
-        ScheduledFuture<?> existing = connWatches.remove(watchId);
+        Map<String, Watch> connWatches = watches.computeIfAbsent(conn, ignored -> new ConcurrentHashMap<>());
+        Watch existing = connWatches.remove(watchId);
         if (existing != null) {
-            existing.cancel(false);
+            existing.cancel();
+        }
+        if (connWatches.size() >= MAX_WATCHES_PER_CONNECTION) {
+            throw new JsonRpcDispatcher.RpcException(-32000, "watch limit exceeded");
         }
 
-        ScheduledFuture<?> future = watchExecutor.scheduleAtFixedRate(
-            () -> sendWatchEvent(conn, watchId, targetMethod, targetParams),
-            0,
+        Watch watch = new Watch();
+        connWatches.put(watchId, watch);
+        watch.future = watchExecutor.scheduleAtFixedRate(
+            () -> sendWatchEvent(conn, watchId, targetMethod, targetParams, watch),
+            intervalMillis,
             intervalMillis,
             TimeUnit.MILLISECONDS
         );
-        connWatches.put(watchId, future);
 
         JsonObject out = new JsonObject();
         out.addProperty("watchId", watchId);
@@ -150,12 +176,12 @@ public final class RpcWebSocketServer extends WebSocketServer {
 
     private JsonObject stopWatch(WebSocket conn, JsonObject params) {
         String watchId = requiredString(params, "watchId");
-        ScheduledFuture<?> future = watches.computeIfAbsent(conn, ignored -> new ConcurrentHashMap<>()).remove(watchId);
+        Watch watch = watches.computeIfAbsent(conn, ignored -> new ConcurrentHashMap<>()).remove(watchId);
         JsonObject out = new JsonObject();
         out.addProperty("watchId", watchId);
-        out.addProperty("stopped", future != null);
-        if (future != null) {
-            future.cancel(false);
+        out.addProperty("stopped", watch != null);
+        if (watch != null) {
+            watch.cancel();
         }
         return out;
     }
@@ -170,43 +196,48 @@ public final class RpcWebSocketServer extends WebSocketServer {
         return out;
     }
 
-    private void sendWatchEvent(WebSocket conn, String watchId, String method, JsonObject params) {
+    private void sendWatchEvent(WebSocket conn, String watchId, String method, JsonObject params, Watch watch) {
         if (!conn.isOpen()) {
             cancelAll(conn);
             return;
         }
+        if (!watch.running.compareAndSet(false, true)) {
+            return;
+        }
         dispatcher.dispatch(method, params).handle((result, throwable) -> {
-            if (!conn.isOpen()) {
+            try {
+                if (!conn.isOpen()) return null;
+                JsonObject event = new JsonObject();
+                event.addProperty("jsonrpc", "2.0");
+                event.addProperty("method", "watch.event");
+                JsonObject eventParams = new JsonObject();
+                eventParams.addProperty("watchId", watchId);
+                eventParams.addProperty("method", method);
+                if (throwable == null) {
+                    eventParams.add("result", result == null ? JsonNull.INSTANCE : result);
+                } else {
+                    Throwable cause = throwable.getCause() == null ? throwable : throwable.getCause();
+                    JsonObject error = new JsonObject();
+                    error.addProperty("message", cause.getMessage() == null ? "Server error" : cause.getMessage());
+                    error.addProperty("code", cause instanceof JsonRpcDispatcher.RpcException rpcException ? rpcException.code() : -32000);
+                    eventParams.add("error", error);
+                }
+                event.add("params", eventParams);
+                conn.send(GSON.toJson(event));
                 return null;
+            } finally {
+                watch.running.set(false);
             }
-            JsonObject event = new JsonObject();
-            event.addProperty("jsonrpc", "2.0");
-            event.addProperty("method", "watch.event");
-            JsonObject eventParams = new JsonObject();
-            eventParams.addProperty("watchId", watchId);
-            eventParams.addProperty("method", method);
-            if (throwable == null) {
-                eventParams.add("result", result == null ? JsonNull.INSTANCE : result);
-            } else {
-                Throwable cause = throwable.getCause() == null ? throwable : throwable.getCause();
-                JsonObject error = new JsonObject();
-                error.addProperty("message", cause.getMessage() == null ? "Server error" : cause.getMessage());
-                error.addProperty("code", cause instanceof JsonRpcDispatcher.RpcException rpcException ? rpcException.code() : -32000);
-                eventParams.add("error", error);
-            }
-            event.add("params", eventParams);
-            conn.send(GSON.toJson(event));
-            return null;
         });
     }
 
     private void cancelAll(WebSocket conn) {
-        Map<String, ScheduledFuture<?>> connWatches = watches.remove(conn);
+        Map<String, Watch> connWatches = watches.remove(conn);
         if (connWatches == null) {
             return;
         }
-        for (ScheduledFuture<?> future : connWatches.values()) {
-            future.cancel(false);
+        for (Watch watch : connWatches.values()) {
+            watch.cancel();
         }
     }
 
@@ -246,5 +277,15 @@ public final class RpcWebSocketServer extends WebSocketServer {
 
     private static int intParam(JsonObject params, String key, int fallback) {
         return params.has(key) && !params.get(key).isJsonNull() ? params.get(key).getAsInt() : fallback;
+    }
+
+    private static final class Watch {
+        private final AtomicBoolean running = new AtomicBoolean();
+        private volatile ScheduledFuture<?> future;
+
+        private void cancel() {
+            ScheduledFuture<?> scheduled = future;
+            if (scheduled != null) scheduled.cancel(false);
+        }
     }
 }

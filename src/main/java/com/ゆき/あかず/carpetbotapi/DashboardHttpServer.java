@@ -6,9 +6,12 @@ import com.sun.net.httpserver.HttpServer;
 
 import java.net.InetSocketAddress;
 import java.util.Map;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 public final class DashboardHttpServer {
+    private static final int MAX_REQUEST_BYTES = 64 * 1024;
     private final BotApiConfig config;
     private final ApiKeyStore apiKeys;
     private final SessionStore sessions;
@@ -24,6 +27,9 @@ public final class DashboardHttpServer {
         DiscordOAuth discord
     ) {
         try {
+            if (!config.publicBaseUrl.startsWith("https://") && !isLoopback(config.host)) {
+                throw new IllegalArgumentException("HTTP dashboard must bind to a loopback address; use HTTPS through a reverse proxy for remote access");
+            }
             this.config = config;
             this.apiKeys = apiKeys;
             this.sessions = sessions;
@@ -35,7 +41,8 @@ public final class DashboardHttpServer {
             this.server.createContext(config.discordRedirectPath, this::callback);
             this.server.createContext("/api/keys", this::createKey);
             this.server.createContext("/rpc", this::rpc);
-            this.server.setExecutor(Executors.newCachedThreadPool());
+            this.server.setExecutor(new ThreadPoolExecutor(2, 8, 30, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(64), new ThreadPoolExecutor.AbortPolicy()));
         } catch (Exception e) {
             throw new IllegalStateException("Could not create HTTP server", e);
         }
@@ -135,7 +142,8 @@ public final class DashboardHttpServer {
                 return;
             }
             String token = sessions.createSession(user);
-            exchange.getResponseHeaders().add("Set-Cookie", "cbapi_session=" + token + "; HttpOnly; SameSite=Lax; Path=/");
+            String secure = config.publicBaseUrl.startsWith("https://") ? "; Secure" : "";
+            exchange.getResponseHeaders().add("Set-Cookie", "cbapi_session=" + token + "; HttpOnly; SameSite=Lax; Path=/" + secure);
             exchange.getResponseHeaders().set("Location", "/");
             exchange.sendResponseHeaders(302, -1);
             exchange.close();
@@ -155,7 +163,16 @@ public final class DashboardHttpServer {
             HttpUtil.send(exchange, 401, "application/json", "{\"error\":\"login required\"}");
             return;
         }
-        JsonObject body = com.google.gson.JsonParser.parseString(HttpUtil.readBody(exchange)).getAsJsonObject();
+        JsonObject body;
+        try {
+            body = com.google.gson.JsonParser.parseString(HttpUtil.readBody(exchange, MAX_REQUEST_BYTES)).getAsJsonObject();
+        } catch (HttpUtil.RequestTooLargeException e) {
+            HttpUtil.send(exchange, 413, "application/json", "{\"error\":\"request too large\"}");
+            return;
+        } catch (RuntimeException e) {
+            HttpUtil.send(exchange, 400, "application/json", "{\"error\":\"invalid JSON\"}");
+            return;
+        }
         ApiKeyStore.CreatedKey key = apiKeys.create(body.has("label") ? body.get("label").getAsString() : "", session.discordId());
         JsonObject out = new JsonObject();
         out.addProperty("id", key.id());
@@ -172,11 +189,22 @@ public final class DashboardHttpServer {
             HttpUtil.send(exchange, 401, "application/json", "{\"error\":\"invalid api key\"}");
             return;
         }
-        String response = dispatcher.handle(HttpUtil.readBody(exchange)).join();
+        String body;
+        try {
+            body = HttpUtil.readBody(exchange, MAX_REQUEST_BYTES);
+        } catch (HttpUtil.RequestTooLargeException e) {
+            HttpUtil.send(exchange, 413, "application/json", "{\"error\":\"request too large\"}");
+            return;
+        }
+        String response = dispatcher.handle(body).join();
         HttpUtil.send(exchange, 200, "application/json", response);
     }
 
     private static String escape(String value) {
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    private static boolean isLoopback(String host) {
+        return "127.0.0.1".equals(host) || "localhost".equalsIgnoreCase(host) || "::1".equals(host);
     }
 }

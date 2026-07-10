@@ -55,7 +55,7 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> remove(JsonObject params) {
         return onServer(() -> {
-            ServerPlayerEntity player = player(requiredString(params, "name"));
+            ServerPlayerEntity player = bot(requiredString(params, "name"));
             player.kill((ServerWorld) player.getWorld());
             return ok();
         });
@@ -86,7 +86,7 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> action(JsonObject params) {
         return onServer(() -> {
-            EntityPlayerActionPack pack = actionPack(player(requiredString(params, "name")));
+            EntityPlayerActionPack pack = actionPack(bot(requiredString(params, "name")));
             EntityPlayerActionPack.ActionType type = actionType(requiredString(params, "action"));
             EntityPlayerActionPack.Action action = actionMode(string(params, "mode", "once"), integer(params, "interval", 1), integer(params, "offset", 0));
             pack.start(type, action);
@@ -96,7 +96,7 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> move(JsonObject params) {
         return onServer(() -> {
-            EntityPlayerActionPack pack = actionPack(player(requiredString(params, "name")));
+            EntityPlayerActionPack pack = actionPack(bot(requiredString(params, "name")));
             if (params.has("forward")) {
                 pack.setForward((float) number(params, "forward", 0));
             }
@@ -115,7 +115,7 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> look(JsonObject params) {
         return onServer(() -> {
-            actionPack(player(requiredString(params, "name")))
+            actionPack(bot(requiredString(params, "name")))
                 .look((float) number(params, "yaw", 0), (float) number(params, "pitch", 0));
             return ok();
         });
@@ -123,7 +123,7 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> turn(JsonObject params) {
         return onServer(() -> {
-            actionPack(player(requiredString(params, "name")))
+            actionPack(bot(requiredString(params, "name")))
                 .turn((float) number(params, "yaw", 0), (float) number(params, "pitch", 0));
             return ok();
         });
@@ -131,7 +131,7 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> drop(JsonObject params) {
         return onServer(() -> {
-            actionPack(player(requiredString(params, "name")))
+            actionPack(bot(requiredString(params, "name")))
                 .drop(integer(params, "amount", 1), bool(params, "all", false));
             return ok();
         });
@@ -143,28 +143,28 @@ public final class BotController {
             if (slot < 0 || slot > 8) {
                 throw new JsonRpcDispatcher.RpcException(-32602, "slot must be 0..8");
             }
-            actionPack(player(requiredString(params, "name"))).setSlot(slot);
+            actionPack(bot(requiredString(params, "name"))).setSlot(slot);
             return ok();
         });
     }
 
     public CompletableFuture<JsonElement> mount(JsonObject params) {
         return onServer(() -> {
-            actionPack(player(requiredString(params, "name"))).mount(bool(params, "ride", true));
+            actionPack(bot(requiredString(params, "name"))).mount(bool(params, "ride", true));
             return ok();
         });
     }
 
     public CompletableFuture<JsonElement> dismount(JsonObject params) {
         return onServer(() -> {
-            actionPack(player(requiredString(params, "name"))).dismount();
+            actionPack(bot(requiredString(params, "name"))).dismount();
             return ok();
         });
     }
 
     public CompletableFuture<JsonElement> stop(JsonObject params) {
         return onServer(() -> {
-            EntityPlayerActionPack pack = actionPack(player(requiredString(params, "name")));
+            EntityPlayerActionPack pack = actionPack(bot(requiredString(params, "name")));
             if (bool(params, "movementOnly", false)) {
                 pack.stopMovement();
             } else {
@@ -176,7 +176,7 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> command(JsonObject params) {
         return onServer(() -> {
-            ServerPlayerEntity player = player(requiredString(params, "name"));
+            ServerPlayerEntity player = bot(requiredString(params, "name"));
             String command = requiredString(params, "command");
             if (command.startsWith("/")) {
                 command = command.substring(1);
@@ -196,7 +196,7 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> inventorySet(JsonObject params) {
         return onServer(() -> {
-            ServerPlayerEntity player = player(requiredString(params, "name"));
+            ServerPlayerEntity player = bot(requiredString(params, "name"));
             int slot = inventorySlot(params, player.getInventory().size());
             if (bool(params, "empty", false)) {
                 player.getInventory().setStack(slot, ItemStack.EMPTY);
@@ -212,7 +212,7 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> inventorySwap(JsonObject params) {
         return onServer(() -> {
-            ServerPlayerEntity player = player(requiredString(params, "name"));
+            ServerPlayerEntity player = bot(requiredString(params, "name"));
             int size = player.getInventory().size();
             int a = slotNumber(params, "slotA", size);
             int b = slotNumber(params, "slotB", size);
@@ -227,7 +227,7 @@ public final class BotController {
 
     public CompletableFuture<JsonElement> inventoryClear(JsonObject params) {
         return onServer(() -> {
-            ServerPlayerEntity player = player(requiredString(params, "name"));
+            ServerPlayerEntity player = bot(requiredString(params, "name"));
             if (params.has("slot")) {
                 player.getInventory().setStack(inventorySlot(params, player.getInventory().size()), ItemStack.EMPTY);
             } else {
@@ -315,6 +315,14 @@ public final class BotController {
             throw new JsonRpcDispatcher.RpcException(-32602, "player not found: " + name);
         }
         return player;
+    }
+
+    private EntityPlayerMPFake bot(String name) {
+        ServerPlayerEntity player = player(name);
+        if (!(player instanceof EntityPlayerMPFake fake)) {
+            throw new JsonRpcDispatcher.RpcException(-32602, "not a fake player: " + name);
+        }
+        return fake;
     }
 
     private EntityPlayerActionPack actionPack(ServerPlayerEntity player) {

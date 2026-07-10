@@ -26,7 +26,7 @@ GitHub Actions でも pull request と push でビルドされ、`main` への p
 ```json
 {
   "enabled": false,
-  "host": "0.0.0.0",
+  "host": "127.0.0.1",
   "port": 8765,
   "websocketPort": 8766,
   "publicBaseUrl": "http://localhost:8765",
@@ -40,6 +40,8 @@ GitHub Actions でも pull request と push でビルドされ、`main` への p
 ```
 
 Discord Developer Portal 側の redirect URL は `publicBaseUrl + discordRedirectPath` にしてください。`discordRequiredGuildId` を指定すると、その Discord サーバーに所属しているユーザーだけが dashboard から API key を発行できます。
+
+HTTP で使う場合は `host` を `127.0.0.1` または `::1` にしてください。リモート公開時は TLS リバースプロキシ経由で提供し、`publicBaseUrl` に `https://` URL を設定してください。API key、セッション、OAuth state は `config/carpet-bot-api.sqlite3` に保存されます。旧JSON設定のAPI keyは初回起動時に自動移行されます。
 
 ## Endpoints
 

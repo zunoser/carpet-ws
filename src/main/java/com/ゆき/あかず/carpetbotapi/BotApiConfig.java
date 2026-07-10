@@ -9,6 +9,7 @@ import java.io.Reader;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -16,7 +17,7 @@ public final class BotApiConfig {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     public boolean enabled = false;
-    public String host = "0.0.0.0";
+    public String host = "127.0.0.1";
     public int port = 8765;
     public int websocketPort = 8766;
     public String publicBaseUrl = "http://localhost:8765";
@@ -28,7 +29,7 @@ public final class BotApiConfig {
     public List<ApiKeyRecord> apiKeys = new ArrayList<>();
 
     public static BotApiConfig load() throws IOException {
-        Path path = FabricLoader.getInstance().getConfigDir().resolve("carpet-bot-api.json");
+        Path path = configPath();
         if (Files.notExists(path)) {
             BotApiConfig config = new BotApiConfig();
             config.sessionSecret = Secrets.randomToken();
@@ -45,11 +46,25 @@ public final class BotApiConfig {
     }
 
     public synchronized void save() throws IOException {
-        Path path = FabricLoader.getInstance().getConfigDir().resolve("carpet-bot-api.json");
+        Path path = configPath();
         Files.createDirectories(path.getParent());
-        try (Writer writer = Files.newBufferedWriter(path)) {
+        Path temporary = Files.createTempFile(path.getParent(), "carpet-bot-api-", ".tmp");
+        try (Writer writer = Files.newBufferedWriter(temporary)) {
             GSON.toJson(this, writer);
         }
+        try {
+            Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    public static Path databasePath() {
+        return FabricLoader.getInstance().getConfigDir().resolve("carpet-bot-api.sqlite3");
+    }
+
+    private static Path configPath() {
+        return FabricLoader.getInstance().getConfigDir().resolve("carpet-bot-api.json");
     }
 
     public String redirectUri() {

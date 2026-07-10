@@ -42,6 +42,14 @@ dependencies {
     modImplementation files("libs/fabric-carpet-1.21.7-1.4.177+v250630.jar")
 
     implementation include("org.java-websocket:Java-WebSocket:1.5.7")
+    implementation include("org.xerial:sqlite-jdbc:3.50.3.0")
+
+    testImplementation "org.junit.jupiter:junit-jupiter:5.13.4"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher:1.13.4"
+}
+
+test {
+    useJUnitPlatform()
 }
 
 processResources {
